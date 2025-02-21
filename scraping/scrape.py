@@ -138,6 +138,10 @@ def save_job_basic_info(jobs_data, source="LinkedIn"):
     print("Inserted job IDs into the database.")
 
 
+def scrape_from_url(url):
+
+
+
 if __name__ == '__main__':
     load_dotenv()
     options = webdriver.ChromeOptions()
