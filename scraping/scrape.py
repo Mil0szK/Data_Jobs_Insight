@@ -37,6 +37,9 @@ def scroll_down():
         print("Scrolling error:", e)
 
 def scrape_linkedin_jobs(country, searched_phrase, max_pages=3):
+    actions.login(driver, email, password)
+    time.sleep(10)
+
     all_jobs = []
     all_pages = input("Do you want to scrape all pages? (y/n): ")
 
@@ -139,6 +142,63 @@ def save_job_basic_info(jobs_data, source="LinkedIn"):
 
 
 def scrape_from_url(url):
+    conn = psycopg2.connect(
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT")
+    )
+    cur = conn.cursor()
+
+    """Scrape job information from a LinkedIn job posting URL."""
+    driver.get(url)
+    time.sleep(3)
+
+
+    try:
+        button_notification = driver.find_element(By.XPATH, "/html/body/div[6]/div/div/section/button")
+        button_notification.click()
+        time.sleep(2)
+    except:
+        print("No notification button found.")
+
+    try:
+        button = driver.find_element(By.XPATH, "/html/body/main/section[1]/div/div/section[1]/div/div/section/button[1]")
+        button.click()
+        time.sleep(3)
+    except:
+        print("No 'Show more' button found.")
+
+    page_source = driver.page_source
+    soup = BeautifulSoup(page_source, 'html.parser')
+    description = soup.select_one("div.show-more-less-html__markup")
+    if description:
+        text_parts = []
+
+        for element in description.children:
+            if element.name == "strong":
+                text_parts.append(element.get_text(strip=True) + ":")
+            else:
+                text_parts.append(element.get_text(strip=True))
+
+
+        full_text = " ".join(text_parts)
+        try:
+            cur.execute("""
+                UPDATE job_postings
+                SET description = %s
+                WHERE job_id = (SELECT job_id FROM job_sources WHERE job_url = %s);
+            """, (full_text, url))
+            conn.commit()
+            print("Successfully updated job description.")
+        except Exception as e:
+            print(f"Database error: {e}")
+
+    else:
+        print("Job description not found!")
+
+
 
 
 
@@ -149,10 +209,10 @@ if __name__ == '__main__':
     email = os.getenv("LINKEDIN_EMAIL")
     password = os.getenv("LINKEDIN_PASSWORD")
 
-    actions.login(driver, email, password)
-    time.sleep(3)
 
-    jobs_data = scrape_linkedin_jobs("Poland", "Data Analyst", max_pages=3)
+    #jobs_data = scrape_linkedin_jobs("Poland", "Data Analyst", max_pages=3)
 
-    save_job_basic_info(jobs_data, "LinkedIn")
-    print(f"Scraped {len(jobs_data)} job postings.")
+    #save_job_basic_info(jobs_data, "LinkedIn")
+    #print(f"Scraped {len(jobs_data)} job postings.")
+
+    scrape_from_url("https://www.linkedin.com/jobs/view/4158353862")
