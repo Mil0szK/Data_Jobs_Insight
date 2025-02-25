@@ -10,17 +10,11 @@ import pandas as pd
 import requests
 import random
 import time
+from datetime import datetime
 import psycopg2
 import json
 import os
 
-def get_url(country, job_title, start=0):
-    template = 'https://www.linkedin.com/jobs/search/?f_AL=true&keywords={}&location={}&start={}'
-    if start == 0:
-        template = 'https://www.linkedin.com/jobs/search/?f_AL=true&keywords={}&location={}'
-    job_title = job_title.replace(' ', '%20')
-    country = country.replace(' ', '%20')
-    return template.format(job_title, country, start)
 
 def scroll_down():
     try:
@@ -37,6 +31,15 @@ def scroll_down():
         print("Scrolling error:", e)
 
 def scrape_linkedin_jobs(country, searched_phrase, max_pages=3):
+
+    def get_url(country, job_title, start=0):
+        template = 'https://www.linkedin.com/jobs/search/?f_AL=true&keywords={}&location={}&start={}'
+        if start == 0:
+            template = 'https://www.linkedin.com/jobs/search/?f_AL=true&keywords={}&location={}'
+        job_title = job_title.replace(' ', '%20')
+        country = country.replace(' ', '%20')
+        return template.format(job_title, country, start)
+
     actions.login(driver, email, password)
     time.sleep(10)
 
@@ -199,6 +202,28 @@ def scrape_from_url(url):
         print("Job description not found!")
 
 
+def scrape_indeed_jobs(country, searched_phrase, max_pages=3):
+
+    def get_url(position, location):
+        """Generate url from position and location"""
+        template = 'https://www.indeed.com/jobs?q={}&l={}'
+        position = position.replace(' ', '+')
+        location = location.replace(' ', '+')
+        url = template.format(position, location)
+        return url
+
+    all_jobs = []
+    all_pages = input("Do you want to scrape all pages? (y/n): ")
+
+    url = "https://www.indeed.com/?from=gnav-homepage"
+    print(f"Scraping: {url}")
+
+    driver.get(url)
+    page_source = driver.page_source
+    soup = BeautifulSoup(page_source, 'html.parser')
+    time.sleep(8)
+
+
 
 
 
@@ -210,9 +235,11 @@ if __name__ == '__main__':
     password = os.getenv("LINKEDIN_PASSWORD")
 
 
-    #jobs_data = scrape_linkedin_jobs("Poland", "Data Analyst", max_pages=3)
+    # jobs_data = scrape_linkedin_jobs("Poland", "Data Analyst", max_pages=3)
 
-    #save_job_basic_info(jobs_data, "LinkedIn")
-    #print(f"Scraped {len(jobs_data)} job postings.")
+    # save_job_basic_info(jobs_data, "LinkedIn")
+    # print(f"Scraped {len(jobs_data)} job postings.")
 
-    scrape_from_url("https://www.linkedin.com/jobs/view/4158353862")
+    # scrape_from_url("https://www.linkedin.com/jobs/view/4158353862")
+
+    scrape_indeed_jobs("Poland", "Data Analyst", max_pages=3)
