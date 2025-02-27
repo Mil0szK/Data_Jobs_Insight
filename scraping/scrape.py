@@ -6,15 +6,51 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.keys import Keys
 from dotenv import load_dotenv
+from selenium.webdriver.chrome.options import Options
+from proxyscrape import create_collector, get_collector
 import pandas as pd
 import requests
 import random
+import re
 import time
 from datetime import datetime
 import psycopg2
 import json
 import os
 
+def get_proxy():
+    """Fetch a new proxy from ProxyScrape"""
+    proxy = collector.get_proxy()
+    if proxy:
+        return f"{proxy.host}:{proxy.port}"
+    return None
+
+def configure_driver():
+    """Setup Selenium WebDriver with Proxy & Headers"""
+    chrome_binary = "/usr/bin/google-chrome-stable"
+    chrome_options = Options()
+    chrome_options.binary_location = chrome_binary
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # Reduce bot detection
+    # chrome_options.add_argument("--headless")  # Optional: Run in headless mode
+    chrome_options.add_argument(f"user-agent=Mozilla/5.0 (X11; Linux x86_64; rv:134.0) Gecko/20100101 Firefox/134.0")
+
+    proxy_address = get_proxy()
+    if proxy_address:
+        print(f"Using Proxy: {proxy_address}")
+        chrome_options.add_argument(f'--proxy-server={proxy_address}')
+    else:
+        print("No proxies available. Running without proxy.")
+
+    driver = webdriver.Chrome(options=chrome_options)
+    return driver
+
+def login_once_to_linkedin(driver):
+    """Login to LinkedIn once per session"""
+    email = os.getenv("LINKEDIN_EMAIL")
+    password = os.getenv("LINKEDIN_PASSWORD")
+    actions.login(driver, email, password)
+    time.sleep(5)  # Allow time for login
+    print("Logged in successfully!")
 
 def scroll_down():
     try:
@@ -30,32 +66,41 @@ def scroll_down():
     except Exception as e:
         print("Scrolling error:", e)
 
-def scrape_linkedin_jobs(country, searched_phrase, max_pages=3):
+def scrape_linkedin_jobs(driver, country, searched_phrase):
 
     def get_url(country, job_title, start=0):
-        template = 'https://www.linkedin.com/jobs/search/?f_AL=true&keywords={}&location={}&start={}'
+        template = 'https://www.linkedin.com/jobs/search/?keywords={}&location={}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
         if start == 0:
-            template = 'https://www.linkedin.com/jobs/search/?f_AL=true&keywords={}&location={}'
+            template = 'https://www.linkedin.com/jobs/search/?keywords={}&location={}&origin=JOB_SEARCH_PAGE_JOB_FILTER'
         job_title = job_title.replace(' ', '%20')
         country = country.replace(' ', '%20')
         return template.format(job_title, country, start)
 
-    actions.login(driver, email, password)
-    time.sleep(10)
-
     all_jobs = []
-    all_pages = input("Do you want to scrape all pages? (y/n): ")
 
-    for page in range(0, max_pages * 25, 25):
-        print(max_pages)
+    driver.get(get_url(country, searched_phrase, 0))
+    time.sleep(3)
+
+    page_source = driver.page_source
+    soup = BeautifulSoup(page_source, 'html.parser')
+
+    results_text = soup.find("div", class_="jobs-search-results-list__subtitle")
+    if results_text:
+        job_count = results_text.get_text(strip=True)
+        job_count = int(job_count.split()[0].replace(',', '')) if job_count.split()[0] else 0
+        max_pages = job_count // 25
+        print(f"🔹 Total job results: {job_count} | Max Pages: {max_pages}")
+
+    from_page = int(input("Enter the starting page number: "))
+    num_pages = int(input("Enter the number of pages to scrape: "))
+    start_offset = (from_page - 1) * 25
+    end_offset = start_offset + (num_pages * 25)
+
+    for page in range(start_offset, end_offset, 25):
         url = get_url(country, searched_phrase, page)
         print(f"Scraping: {url}")
 
         driver.get(url)
-        time.sleep(3)
-
-        button = driver.find_element(By.ID, "searchFilter_applyWithLinkedin")
-        button.click()
         time.sleep(3)
 
         scroll_down()
@@ -63,39 +108,46 @@ def scrape_linkedin_jobs(country, searched_phrase, max_pages=3):
         page_source = driver.page_source
         soup = BeautifulSoup(page_source, 'html.parser')
 
-        if page == 0:
-            results_text = soup.find("div", class_="jobs-search-results-list__subtitle")
-            if results_text:
-                job_count = results_text.get_text(strip=True)
-                if job_count:
-                    print(f"Total job results: {int(job_count.split()[0])}")
-                    if all_pages == 'y':
-                        max_pages = int(int(job_count.split()[0])/25)
 
-        # Find job cards
-        job_cards = soup.find_all("div", class_="job-card-container")
+        # job_cards = soup.find_all("div", class_="")
+        job_cards = soup.find_all("div", attrs={"data-job-id": True})
+        # job_cards = driver.find_elements(By.XPATH, "/html/body/div[7]/div[3]/div[4]/div/div/main/div/div[2]/div[1]/div/ul/li[1]/div/div")
+        # print(job_cards)
         for job in job_cards:
-            job_area = job.find('a', class_="disabled ember-view job-card-container__link VqHKjOyVafyXWkAuDoXoeHlZcwCIjIyvRuDWBUe job-card-list__title--link")
-            job_title = job_area.find('span').get_text(strip=True)
-            location_area = job.find('ul', class_="job-card-container__metadata-wrapper")
-            location = location_area.find('span').get_text(strip=True)
-            company_area = job.find('div', class_="artdeco-entity-lockup__subtitle ember-view")
-            company = company_area.find('span').get_text(strip=True)
-            job_id = job.get("data-job-id")
+            # print(job)
+            try:
+                # Extract Job Title
+                job_title_tag = job.find("a", attrs={"aria-label": True})
+                job_title = job_title_tag.find("span", {"aria-hidden": "true"}).get_text(
+                    strip=True) if job_title_tag else "Unknown"
 
-            if job_id:
-                job_data = {
-                    "job_id": job_id,
-                    "job_title": job_title,
-                    "company": company,
-                    "location": location
-                }
-                all_jobs.append(job_data)
-                print(f"Scraped: {job_data}")
+                # Extract Location
+                location_ul = job.find("ul", class_=lambda x: x and "metadata-wrapper" in x)
+                location_span = location_ul.find("span") if location_ul else None
+                location = location_span.get_text(strip=True) if location_span else "Unknown"
+
+
+                # Extract Company Name
+                company_div = job.find("div", class_=lambda x: x and "subtitle" in x)
+                company_span = company_div.find("span") if company_div else None
+                company_name = company_span.get_text(strip=True) if company_span else "Unknown"
+
+                job_id = job.get("data-job-id")
+
+                if job_id:
+                    job_data = {
+                        "job_id": job_id,
+                        "job_title": job_title,
+                        "company": company_name,
+                        "location": location
+                    }
+                    all_jobs.append(job_data)
+                    print(f"Scraped: {job_data}")
+            except Exception as e:
+                print("Error scraping job:", e)
 
         time.sleep(random.uniform(3, 6))
 
-    driver.quit()
     return all_jobs
 
 def save_job_basic_info(jobs_data, source="LinkedIn"):
@@ -202,44 +254,21 @@ def scrape_from_url(url):
         print("Job description not found!")
 
 
-def scrape_indeed_jobs(country, searched_phrase, max_pages=3):
-
-    def get_url(position, location):
-        """Generate url from position and location"""
-        template = 'https://www.indeed.com/jobs?q={}&l={}'
-        position = position.replace(' ', '+')
-        location = location.replace(' ', '+')
-        url = template.format(position, location)
-        return url
-
-    all_jobs = []
-    all_pages = input("Do you want to scrape all pages? (y/n): ")
-
-    url = "https://www.indeed.com/?from=gnav-homepage"
-    print(f"Scraping: {url}")
-
-    driver.get(url)
-    page_source = driver.page_source
-    soup = BeautifulSoup(page_source, 'html.parser')
-    time.sleep(8)
-
-
-
-
 
 if __name__ == '__main__':
     load_dotenv()
-    options = webdriver.ChromeOptions()
-    driver = webdriver.Chrome(options=options)
     email = os.getenv("LINKEDIN_EMAIL")
     password = os.getenv("LINKEDIN_PASSWORD")
+    collector = create_collector('my-collector', 'https')
+    driver = configure_driver()
+    login_once_to_linkedin(driver)
 
 
-    # jobs_data = scrape_linkedin_jobs("Poland", "Data Analyst", max_pages=3)
+    jobs_data = scrape_linkedin_jobs(driver, "Poland", "python")
 
-    # save_job_basic_info(jobs_data, "LinkedIn")
-    # print(f"Scraped {len(jobs_data)} job postings.")
+
+    save_job_basic_info(jobs_data, "LinkedIn")
+    driver.quit()
+    print(f"Scraped {len(jobs_data)} job postings.")
 
     # scrape_from_url("https://www.linkedin.com/jobs/view/4158353862")
-
-    scrape_indeed_jobs("Poland", "Data Analyst", max_pages=3)
