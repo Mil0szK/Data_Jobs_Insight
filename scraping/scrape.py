@@ -42,6 +42,7 @@ def configure_driver():
         print("No proxies available. Running without proxy.")
 
     driver = webdriver.Chrome(options=chrome_options)
+    driver.set_page_load_timeout(180)
     return driver
 
 def login_once_to_linkedin(driver):
@@ -78,7 +79,12 @@ def scrape_linkedin_jobs(driver, country, searched_phrase):
 
     all_jobs = []
 
-    driver.get(get_url(country, searched_phrase, 0))
+    try:
+        driver.get(get_url(country, searched_phrase, 0))
+    except Exception as e:
+        print("Error loading LinkedIn:", e)
+        driver.quit()
+        return all_jobs
     time.sleep(3)
 
     page_source = driver.page_source
@@ -97,11 +103,17 @@ def scrape_linkedin_jobs(driver, country, searched_phrase):
     end_offset = start_offset + (num_pages * 25)
 
     for page in range(start_offset, end_offset, 25):
-        url = get_url(country, searched_phrase, page)
-        print(f"Scraping: {url}")
+        page_jobs = []
 
-        driver.get(url)
+        try:
+            url= get_url(country, searched_phrase, page)
+            driver.get(url)
+        except Exception as e:
+            print("Error loading LinkedIn:", e)
+            driver.quit()
+            return all_jobs
         time.sleep(3)
+        print(f"Scraping: {url}")
 
         scroll_down()
 
@@ -141,12 +153,16 @@ def scrape_linkedin_jobs(driver, country, searched_phrase):
                         "company": company_name,
                         "location": location
                     }
-                    all_jobs.append(job_data)
+                    page_jobs.append(job_data)
                     print(f"Scraped: {job_data}")
             except Exception as e:
                 print("Error scraping job:", e)
 
         time.sleep(random.uniform(3, 6))
+
+        if page_jobs:
+            save_job_basic_info(page_jobs, "LinkedIn")
+            all_jobs.extend(page_jobs)
 
     return all_jobs
 
