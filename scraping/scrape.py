@@ -25,6 +25,29 @@ def get_proxy():
         return f"{proxy.host}:{proxy.port}"
     return None
 
+def get_geo_id(driver, location):
+    search_url = f"https://www.linkedin.com/jobs/search/"
+    driver.get(search_url)
+    time.sleep(3)
+    location_box = driver.find_element(By.XPATH, '//*[@id="jobs-search-box-location-id-ember100"]')
+    location_box.clear()
+    location_box.send_keys(location)
+
+    search_button = driver.find_element(By.XPATH, "/html/body/div[7]/header/div/div/div/div[2]/button[1]")
+    search_button.click()
+
+    time.sleep(3)
+
+    current_url = driver.current_url
+    match = re.search(r"geoId=(\d+)", current_url)
+    if match:
+        geo_id = match.group(1)
+        print("For geoId: ", geo_id)
+        return geo_id
+    else:
+        print("geoId not found for url: ", current_url)
+        return None
+
 def configure_driver():
     """Setup Selenium WebDriver with Proxy & Headers"""
     chrome_binary = "/usr/bin/google-chrome-stable"
@@ -67,20 +90,31 @@ def scroll_down():
     except Exception as e:
         print("Scrolling error:", e)
 
-def scrape_linkedin_jobs(driver, country, searched_phrase):
+def scrape_linkedin_jobs(driver, location, searched_phrase):
 
-    def get_url(country, job_title, start=0):
-        template = 'https://www.linkedin.com/jobs/search/?keywords={}&location={}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
-        if start == 0:
-            template = 'https://www.linkedin.com/jobs/search/?keywords={}&location={}&origin=JOB_SEARCH_PAGE_JOB_FILTER'
+    experience_levels = ["f_E=1", "f_E=2", "f_E=3", "f_E=4", "f_E=5", "f_E=6"]
+    phrases = ["Python", "SQL", "Java", "C++"]
+
+    geo_id = get_geo_id(driver, location)
+
+    def get_url(location, job_title, geo_id=None, start=0):
+        if geo_id:
+            template = 'https://www.linkedin.com/jobs/search/?geoId={}&keywords={}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
+        else:
+            template = 'https://www.linkedin.com/jobs/search/?keywords={}&location={}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
+
         job_title = job_title.replace(' ', '%20')
-        country = country.replace(' ', '%20')
-        return template.format(job_title, country, start)
+
+        if geo_id:
+            return template.format(geo_id, job_title, start)
+        else:
+            location = location.replace(' ', '%20')
+            return template.format(job_title, location, start)
 
     all_jobs = []
 
     try:
-        driver.get(get_url(country, searched_phrase, 0))
+        driver.get(get_url(location, searched_phrase, geo_id, 0))
     except Exception as e:
         print("Error loading LinkedIn:", e)
         driver.quit()
@@ -106,7 +140,7 @@ def scrape_linkedin_jobs(driver, country, searched_phrase):
         page_jobs = []
 
         try:
-            url= get_url(country, searched_phrase, page)
+            url= get_url(location, searched_phrase, geo_id, page)
             driver.get(url)
         except Exception as e:
             print("Error loading LinkedIn:", e)
@@ -280,7 +314,7 @@ if __name__ == '__main__':
     login_once_to_linkedin(driver)
 
 
-    jobs_data = scrape_linkedin_jobs(driver, "Poland", "python")
+    jobs_data = scrape_linkedin_jobs(driver, "Cracow, Małopolskie, Poland", "")
 
 
     save_job_basic_info(jobs_data, "LinkedIn")
