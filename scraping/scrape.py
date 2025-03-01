@@ -93,110 +93,144 @@ def scroll_down():
 def scrape_linkedin_jobs(driver, location, searched_phrase):
 
     experience_levels = ["f_E=1", "f_E=2", "f_E=3", "f_E=4", "f_E=5", "f_E=6"]
-    phrases = ["Python", "SQL", "Java", "C++"]
-
+    phrases = [
+        "Internship", "Python", "Java", "C++", "Data Scientist", "Data Analyst",
+        "Machine Learning", "AI Engineer", "Deep Learning", "Big Data Engineer",
+        "Software Engineer", "Software Developer", "Application Developer",
+        "Web Developer", "Frontend Developer", "UI Developer", "UX Designer",
+        "React Developer", "Angular Developer", "Vue.js Developer",
+        "Backend Developer", "Node.js Developer", "Django Developer",
+        "Flask Developer", "Golang Developer", "Rust Developer",
+        "Full Stack Developer", "DevOps", "Cloud Engineer", "Site Reliability Engineer",
+        "AWS Engineer", "Azure Engineer", "Google Cloud Engineer",
+        "Cybersecurity", "Ethical Hacker", "Penetration Tester", "SOC Analyst",
+        "Security Engineer", "Cloud Security", "Database", "SQL Developer",
+        "BI Developer", "Power BI Developer", "Tableau Developer",
+        "Administrator", "Linux Administrator", "IT Technician", "Help Desk",
+        "Technical Support", "IT Administrator", "Systems Engineer",
+        "Network Engineer", "IT Specialist", "IT Support",
+        "Business Analyst", "Data Engineer", "Quantitative Analyst", "Risk Analyst",
+        "FinTech Engineer", "Blockchain Developer", "Quant Developer", "Crypto Developer"
+    ]
     geo_id = get_geo_id(driver, location)
 
-    def get_url(location, job_title, geo_id=None, start=0):
+    def get_url(searched_phrase, exp_level=None, geo_id=None, start=0):
         if geo_id:
-            template = 'https://www.linkedin.com/jobs/search/?geoId={}&keywords={}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
+            template = 'https://www.linkedin.com/jobs/search/?geoId={}&keywords={}&{}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
+            return template.format(geo_id, searched_phrase.replace(' ', '%20'), exp_level, start)
         else:
-            template = 'https://www.linkedin.com/jobs/search/?keywords={}&location={}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
-
-        job_title = job_title.replace(' ', '%20')
-
-        if geo_id:
-            return template.format(geo_id, job_title, start)
-        else:
-            location = location.replace(' ', '%20')
-            return template.format(job_title, location, start)
+            template = 'https://www.linkedin.com/jobs/search/?keywords={}&location={}&{}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
+            return template.format(searched_phrase.replace(' ', '%20'), location.replace(' ', '%20'), exp_level, start)
 
     all_jobs = []
-
-    try:
-        driver.get(get_url(location, searched_phrase, geo_id, 0))
-    except Exception as e:
-        print("Error loading LinkedIn:", e)
-        driver.quit()
-        return all_jobs
+    driver.get(get_url("", geo_id, 0))
     time.sleep(3)
 
     page_source = driver.page_source
     soup = BeautifulSoup(page_source, 'html.parser')
 
     results_text = soup.find("div", class_="jobs-search-results-list__subtitle")
-    if results_text:
-        job_count = results_text.get_text(strip=True)
-        job_count = int(job_count.split()[0].replace(',', '')) if job_count.split()[0] else 0
-        max_pages = job_count // 25
-        print(f"🔹 Total job results: {job_count} | Max Pages: {max_pages}")
+    job_count = int(results_text.get_text(strip=True).split()[0].replace(',', '')) if results_text else 0
+    max_pages = job_count // 25
+    print(f"🔹 Total job results: {job_count} | Max Pages: {max_pages}")
 
     from_page = int(input("Enter the starting page number: "))
     num_pages = int(input("Enter the number of pages to scrape: "))
     start_offset = (from_page - 1) * 25
     end_offset = start_offset + (num_pages * 25)
 
-    for page in range(start_offset, end_offset, 25):
-        page_jobs = []
+    last_page_had_jobs = True
 
-        try:
-            url= get_url(location, searched_phrase, geo_id, page)
-            driver.get(url)
-        except Exception as e:
-            print("Error loading LinkedIn:", e)
-            driver.quit()
-            return all_jobs
-        time.sleep(3)
-        print(f"Scraping: {url}")
+    for phrase in phrases:
+        for exp_level in experience_levels:
 
-        scroll_down()
-
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, 'html.parser')
-
-
-        # job_cards = soup.find_all("div", class_="")
-        job_cards = soup.find_all("div", attrs={"data-job-id": True})
-        # job_cards = driver.find_elements(By.XPATH, "/html/body/div[7]/div[3]/div[4]/div/div/main/div/div[2]/div[1]/div/ul/li[1]/div/div")
-        # print(job_cards)
-        for job in job_cards:
-            # print(job)
             try:
-                # Extract Job Title
-                job_title_tag = job.find("a", attrs={"aria-label": True})
-                job_title = job_title_tag.find("span", {"aria-hidden": "true"}).get_text(
-                    strip=True) if job_title_tag else "Unknown"
-
-                # Extract Location
-                location_ul = job.find("ul", class_=lambda x: x and "metadata-wrapper" in x)
-                location_span = location_ul.find("span") if location_ul else None
-                location = location_span.get_text(strip=True) if location_span else "Unknown"
-
-
-                # Extract Company Name
-                company_div = job.find("div", class_=lambda x: x and "subtitle" in x)
-                company_span = company_div.find("span") if company_div else None
-                company_name = company_span.get_text(strip=True) if company_span else "Unknown"
-
-                job_id = job.get("data-job-id")
-
-                if job_id:
-                    job_data = {
-                        "job_id": job_id,
-                        "job_title": job_title,
-                        "company": company_name,
-                        "location": location
-                    }
-                    page_jobs.append(job_data)
-                    print(f"Scraped: {job_data}")
+                driver.get(get_url(searched_phrase, exp_level ,geo_id, 0))
+                time.sleep(3)
             except Exception as e:
-                print("Error scraping job:", e)
+                print("Error loading LinkedIn:", e)
+                driver.quit()
+                return all_jobs
 
-        time.sleep(random.uniform(3, 6))
+            page_source = driver.page_source
+            soup = BeautifulSoup(page_source, 'html.parser')
 
-        if page_jobs:
-            save_job_basic_info(page_jobs, "LinkedIn")
-            all_jobs.extend(page_jobs)
+            job_count = int(results_text.get_text(strip=True).split()[0].replace(',', '')) if results_text else 0
+            if job_count == 0:
+                print(f"🚫 No jobs found for {phrase} with {exp_level}. Skipping.")
+                continue
+
+            for page in range(start_offset, end_offset, 25):
+                page_jobs = []
+
+                try:
+                    url = get_url(phrase, exp_level, geo_id, page)
+                    driver.get(url)
+                    time.sleep(3)
+                    print(f"Scraping: {url}")
+                except Exception as e:
+                    print("Error loading LinkedIn:", e)
+                    driver.quit()
+                    return all_jobs
+
+                scroll_down()
+
+                page_source = driver.page_source
+                soup = BeautifulSoup(page_source, 'html.parser')
+
+
+                # job_cards = soup.find_all("div", class_="")
+                job_cards = soup.find_all("div", attrs={"data-job-id": True})
+                unknown_count = 0
+                # job_cards = driver.find_elements(By.XPATH, "/html/body/div[7]/div[3]/div[4]/div/div/main/div/div[2]/div[1]/div/ul/li[1]/div/div")
+                for job in job_cards:
+                    try:
+                        # Extract Job Title
+                        job_title_tag = job.find("a", attrs={"aria-label": True})
+                        job_title = job_title_tag.find("span", {"aria-hidden": "true"}).get_text(
+                            strip=True) if job_title_tag else "Unknown"
+
+                        # Extract Location
+                        location_ul = job.find("ul", class_=lambda x: x and "metadata-wrapper" in x)
+                        location_span = location_ul.find("span") if location_ul else None
+                        location = location_span.get_text(strip=True) if location_span else "Unknown"
+
+
+                        # Extract Company Name
+                        company_div = job.find("div", class_=lambda x: x and "subtitle" in x)
+                        company_span = company_div.find("span") if company_div else None
+                        company_name = company_span.get_text(strip=True) if company_span else "Unknown"
+
+                        job_id = job.get("data-job-id")
+
+                        if job_id:
+                            if job_title == "Unknown" and company_name == "Unknown":
+                                unknown_count += 1
+                            else:
+                                job_data = {
+                                    "job_id": job_id,
+                                    "job_title": job_title,
+                                    "company": company_name,
+                                    "location": location
+                                }
+                                page_jobs.append(job_data)
+                                print(f"Scraped: {job_data}")
+                    except Exception as e:
+                        print("Error scraping job:", e)
+
+                time.sleep(random.uniform(3, 6))
+
+                if len(page_jobs) == 0 or unknown_count > 1:
+                    print(f"⚠️ No jobs found on page {page // 25 + 1}. Moving to next phrase...")
+                    last_page_had_jobs = False
+                    break
+
+                if page_jobs:
+                    save_job_basic_info(page_jobs, "LinkedIn")
+                    all_jobs.extend(page_jobs)
+
+            if not last_page_had_jobs:
+                break
 
     return all_jobs
 
