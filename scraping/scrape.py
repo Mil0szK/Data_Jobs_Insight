@@ -67,6 +67,41 @@ def configure_driver():
     driver.set_page_load_timeout(180)
     return driver
 
+
+def safe_get_url(driver, phrase, location, exp_level=None, geo_id=None, work_mode=None, start=0, retries=3, timeout=180):
+    """Attempts to load a LinkedIn URL with retries in case of timeout or blockage"""
+
+    def get_url(searched_phrase, location, exp_level=None, geo_id=None, work_mode=None, start=0):
+        if geo_id:
+            template = 'https://www.linkedin.com/jobs/search/?geoId={}&keywords={}&{}&{}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
+            return template.format(geo_id, searched_phrase.replace(' ', '%20'), exp_level or "", work_mode or "", start)
+        else:
+            template = 'https://www.linkedin.com/jobs/search/?keywords={}&location={}&{}&{}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
+            return template.format(searched_phrase.replace(' ', '%20'), location.replace(' ', '%20'), exp_level or "",
+                                   work_mode or "", start)
+
+    url = get_url(phrase, location=location, exp_level=exp_level, geo_id=geo_id, work_mode=work_mode, start=start)
+
+    for attempt in range(retries):
+        try:
+            driver.set_page_load_timeout(timeout)
+            driver.get(url)
+            time.sleep(random.uniform(3, 8))  # Random delay to avoid detection
+
+            if "login" in driver.current_url or "captcha" in driver.page_source.lower():
+                print("LinkedIn is blocking the bot! Trying to re-login...")
+                login_once_to_linkedin(driver)
+                time.sleep(5)
+
+            print(f"Successfully loaded: {url}")
+            return True
+        except Exception as e:
+            print(f"Error loading {url}: {e}")
+            time.sleep(5)
+
+    print(f"Failed to load {url} after {retries} attempts.")
+    return False
+
 def login_once_to_linkedin(driver):
     """Login to LinkedIn once per session"""
     email = os.getenv("LINKEDIN_EMAIL")
@@ -93,38 +128,18 @@ def scrape_linkedin_jobs(location, searched_phrase):
     driver = configure_driver()
     login_once_to_linkedin(driver)
     experience_levels = ["f_E=1", "f_E=2", "f_E=3", "f_E=4", "f_E=5", "f_E=6"]
-    work_modes = ["f_WT=1", "f_WT=2", "f_WT=3"]
+    work_modes = ["f_WT=1", "f_WT=3"] # without remote "f_WT=2"
+    # "Internship", "Python", "SQL", "C%2B%2B", "C%23", "C", "Java", "JavaScript", "PHP", "Ruby", "Swift",
+    #         "TypeScript",
     phrases = [
-        "Internship", "Python", "Java", "C++", "Data Scientist", "Data Analyst",
-        "Machine Learning", "AI Engineer", "Deep Learning", "Big Data Engineer",
-        "Software Engineer", "Software Developer", "Application Developer",
-        "Web Developer", "Frontend Developer", "UI Developer", "UX Designer",
-        "React Developer", "Angular Developer", "Vue.js Developer",
-        "Backend Developer", "Node.js Developer", "Django Developer",
-        "Flask Developer", "Golang Developer", "Rust Developer",
-        "Full Stack Developer", "DevOps", "Cloud Engineer", "Site Reliability Engineer",
-        "AWS Engineer", "Azure Engineer", "Google Cloud Engineer",
-        "Cybersecurity", "Ethical Hacker", "Penetration Tester", "SOC Analyst",
-        "Security Engineer", "Cloud Security", "Database", "SQL Developer",
-        "BI Developer", "Power BI Developer", "Tableau Developer",
-        "Administrator", "Linux Administrator", "IT Technician", "Help Desk",
-        "Technical Support", "IT Administrator", "Systems Engineer",
-        "Network Engineer", "IT Specialist", "IT Support",
-        "Business Analyst", "Data Engineer", "Quantitative Analyst", "Risk Analyst",
-        "FinTech Engineer", "Blockchain Developer", "Quant Developer", "Crypto Developer"
+        "Kotlin", "Go", "Rust", "Scala", "HTML", "CSS", "React", "Angular", "Vue", "Node.js",
+        "Django", "Flask", "Spring", "Laravel", "Express", "Ruby on Rails", "ASP.NET", "jQuery", "Bootstrap",
+        "Git", "Docker", "Kubernetes", "AWS", "Azure", "Google Cloud", "Linux", "Windows", "iOS", "Android",
     ]
     geo_id = get_geo_id(driver, location)
 
-    def get_url(searched_phrase, exp_level=None, geo_id=None, work_mode=None, start=0):
-        if geo_id:
-            template = 'https://www.linkedin.com/jobs/search/?geoId={}&keywords={}&{}&{}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
-            return template.format(geo_id, searched_phrase.replace(' ', '%20'), exp_level, work_mode, start)
-        else:
-            template = 'https://www.linkedin.com/jobs/search/?keywords={}&location={}&{}&{}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
-            return template.format(searched_phrase.replace(' ', '%20'), location.replace(' ', '%20'), exp_level, work_mode, start)
-
     all_jobs = []
-    driver.get(get_url("", geo_id, 0))
+    safe_get_url(driver, "", location=location,  geo_id=geo_id, start=0)
     time.sleep(3)
 
     page_source = driver.page_source
@@ -139,7 +154,8 @@ def scrape_linkedin_jobs(location, searched_phrase):
     for phrase in phrases:
         print(f"Searching jobs for: {phrase}")
 
-        driver.get(get_url(phrase, geo_id=geo_id, start=0))
+        if not safe_get_url(driver, phrase, location=location, geo_id=geo_id, start=0):
+            continue
         time.sleep(3)
 
         page_source = driver.page_source
@@ -150,17 +166,11 @@ def scrape_linkedin_jobs(location, searched_phrase):
         max_pages = job_count // 25 if job_count else 1
         print(f"Total job results: {job_count} | Max Pages: {max_pages}")
 
-        if job_count > 0 and job_count < 1000:
-            print(f"{phrase} has <1000 jobs, scraping ALL without experience filters")
-            experience_levels_to_use = [None]
-        else:
-            print(f"{phrase} has {job_count} jobs, applying experience level filters")
-            experience_levels_to_use = experience_levels
+        for work_mode in work_modes:
+            print(f"Work Mode: {work_mode if work_mode else 'All'}")
 
-        for exp_level in experience_levels_to_use:
-            print(f"Searching: {phrase} ({exp_level if exp_level else 'All Levels'})")
-
-            driver.get(get_url(phrase, exp_level, geo_id, start=0))
+            if not safe_get_url(driver, phrase, location=location, geo_id=geo_id, work_mode=work_mode, start=0):
+                continue
             time.sleep(3)
 
             page_source = driver.page_source
@@ -168,21 +178,22 @@ def scrape_linkedin_jobs(location, searched_phrase):
 
             results_text = soup.find("div", class_="jobs-search-results-list__subtitle")
             new_job_count = int(results_text.get_text(strip=True).split()[0].replace(',', '')) if results_text else 0
-            print(f"Job count after experience filtering: {new_job_count}")
 
-            if new_job_count > 1000:
-                print(f"Still too many results ({job_count}), applying Work Mode filters")
-                work_modes_to_use = work_modes
+            if new_job_count > 0 and new_job_count < 1000:
+                print(f"{phrase} has <1000 jobs, scraping ALL without experience filters")
+                experience_levels_to_use = [None]
             else:
-                work_modes_to_use = [None]
+                print(f"{phrase} has {new_job_count} jobs, applying experience level filters")
+                experience_levels_to_use = experience_levels
 
-            for work_mode in work_modes_to_use:
-                print(f"Work Mode: {work_mode if work_mode else 'All'}")
+            for exp_level in experience_levels_to_use:
+                print(f"Searching: {phrase} ({exp_level if exp_level else 'All Levels'})")
 
                 retries = 3
                 for attempt in range(retries):
                     try:
-                        driver.get(get_url(phrase, exp_level, geo_id, work_mode, 0))
+                        if not safe_get_url(driver, phrase, location=location, exp_level=exp_level, geo_id=geo_id, work_mode=work_mode, start=0):
+                            continue
                         time.sleep(3)
                         break
                     except Exception as e:
@@ -217,10 +228,9 @@ def scrape_linkedin_jobs(location, searched_phrase):
 
                     for attempt in range(retry_count):
                         try:
-                            url = get_url(phrase, exp_level, geo_id, work_mode, page)
-                            driver.get(url)
+                            if not safe_get_url(driver, phrase, location=location, exp_level=exp_level, geo_id=geo_id, work_mode=work_mode, start=0):
+                                continue
                             time.sleep(3)
-                            print(f"Scraping: {url}")
                             break
                         except Exception as e:
                             print("Error loading LinkedIn attempts, ", e)
@@ -293,7 +303,7 @@ def scrape_linkedin_jobs(location, searched_phrase):
                         save_job_basic_info(page_jobs, "LinkedIn")
                         all_jobs.extend(page_jobs)
 
-
+    driver.quit()
     return all_jobs
 
 def save_job_basic_info(jobs_data, source="LinkedIn"):
@@ -407,7 +417,8 @@ if __name__ == '__main__':
     password = os.getenv("LINKEDIN_PASSWORD")
     collector = create_collector('my-collector', 'https')
 
-    cities = ["Cracow", "Wrocław", "Katowice", "Gdańsk", "Łódź", "Poznan", "Rzeszów", "Szczecin", "Bydgoszcz",
+    # "Wrocław", Cracow - already scraped
+    cities = ["Cracow", "Wrocław", "Gdańsk", "Łódź", "Poznan", "Rzeszów", "Szczecin", "Bydgoszcz",
               "Lublin", "Białsytok", "Warsaw"]
 
 
