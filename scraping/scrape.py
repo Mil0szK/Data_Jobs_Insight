@@ -94,13 +94,13 @@ def safe_get_url(driver, phrase, location, exp_level=None, geo_id=None, work_mod
                 time.sleep(5)
 
             print(f"Successfully loaded: {url}")
-            return True
+            return driver.page_source
         except Exception as e:
             print(f"Error loading {url}: {e}")
             time.sleep(5)
 
     print(f"Failed to load {url} after {retries} attempts.")
-    return False
+    return None
 
 def login_once_to_linkedin(driver):
     """Login to LinkedIn once per session"""
@@ -124,15 +124,62 @@ def scroll_down(driver):
     except Exception as e:
         print("Scrolling error:", e)
 
+def extract_job_count(soup):
+    """Extract the number of job listings from the search page."""
+    results_text = soup.find("div", class_="jobs-search-results-list__subtitle")
+    if results_text:
+        try:
+            return int(results_text.get_text(strip=True).split()[0].replace(',', ''))
+        except ValueError:
+            return 0
+    return 0
+
+
+def scrape_jobs_from_page(page_source):
+    """Extract job listings from a LinkedIn job search results page."""
+    soup = BeautifulSoup(page_source, 'html.parser')
+    job_cards = soup.find_all("div", attrs={"data-job-id": True})
+
+    scraped_jobs = []
+    for job in job_cards:
+        try:
+            job_title_tag = job.find("a", attrs={"aria-label": True})
+            job_title = job_title_tag.find("span", {"aria-hidden": "true"}).get_text(
+                strip=True) if job_title_tag else "Unknown"
+
+            location_ul = job.find("ul", class_=lambda x: x and "metadata-wrapper" in x)
+            location_span = location_ul.find("span") if location_ul else None
+            location = location_span.get_text(strip=True) if location_span else "Unknown"
+
+            company_div = job.find("div", class_=lambda x: x and "subtitle" in x)
+            company_span = company_div.find("span") if company_div else None
+            company_name = company_span.get_text(strip=True) if company_span else "Unknown"
+
+            job_id = job.get("data-job-id")
+
+            if job_id and job_title != "Unknown" and company_name != "Unknown":
+                job_data = {
+                    "job_id": job_id,
+                    "job_title": job_title,
+                    "company": company_name,
+                    "location": location
+                }
+                scraped_jobs.append(job_data)
+                print(f"Scraped: {job_data}")
+        except Exception as e:
+            print("Error scraping job:", e)
+
+    return scraped_jobs
+
 def scrape_linkedin_jobs(location, searched_phrase):
     driver = configure_driver()
     login_once_to_linkedin(driver)
+
     experience_levels = ["f_E=1", "f_E=2", "f_E=3", "f_E=4", "f_E=5", "f_E=6"]
     work_modes = ["f_WT=1", "f_WT=3"] # without remote "f_WT=2"
-    # "Internship", "Python", "SQL", "C%2B%2B", "C%23", "C", "Java", "JavaScript", "PHP", "Ruby", "Swift",
-    #         "TypeScript",
     phrases = [
-        "Kotlin", "Go", "Rust", "Scala", "HTML", "CSS", "React", "Angular", "Vue", "Node.js",
+        "Internship", "Python", "SQL", "C%2B%2B", "C%23", "C", "Java", "JavaScript", "PHP", "Ruby", "Swift",
+        "TypeScript", "Kotlin", "Go", "Rust", "Scala", "HTML", "CSS", "React", "Angular", "Vue", "Node.js",
         "Django", "Flask", "Spring", "Laravel", "Express", "Ruby on Rails", "ASP.NET", "jQuery", "Bootstrap",
         "Git", "Docker", "Kubernetes", "AWS", "Azure", "Google Cloud", "Linux", "Windows", "iOS", "Android",
     ]
@@ -154,154 +201,53 @@ def scrape_linkedin_jobs(location, searched_phrase):
     for phrase in phrases:
         print(f"Searching jobs for: {phrase}")
 
-        if not safe_get_url(driver, phrase, location=location, geo_id=geo_id, start=0):
-            continue
-        time.sleep(3)
-
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, 'html.parser')
-
-        results_text = soup.find("div", class_="jobs-search-results-list__subtitle")
-        job_count = int(results_text.get_text(strip=True).split()[0].replace(',', '')) if results_text else 0
-        max_pages = job_count // 25 if job_count else 1
-        print(f"Total job results: {job_count} | Max Pages: {max_pages}")
-
         for work_mode in work_modes:
             print(f"Work Mode: {work_mode if work_mode else 'All'}")
 
-            if not safe_get_url(driver, phrase, location=location, geo_id=geo_id, work_mode=work_mode, start=0):
+            page_source = safe_get_url(driver, phrase, location=location, geo_id=geo_id, work_mode=work_mode, start=0)
+            if not page_source:
                 continue
-            time.sleep(3)
-
-            page_source = driver.page_source
             soup = BeautifulSoup(page_source, 'html.parser')
+            job_count = extract_job_count(soup)
 
-            results_text = soup.find("div", class_="jobs-search-results-list__subtitle")
-            new_job_count = int(results_text.get_text(strip=True).split()[0].replace(',', '')) if results_text else 0
+            if job_count == 0:
+                print(f"❌ No jobs found for {phrase} in {location}. Skipping.")
+                continue
 
-            if new_job_count > 0 and new_job_count < 1000:
+            if job_count > 0 and job_count < 1000:
                 print(f"{phrase} has <1000 jobs, scraping ALL without experience filters")
                 experience_levels_to_use = [None]
             else:
-                print(f"{phrase} has {new_job_count} jobs, applying experience level filters")
+                print(f"{phrase} has {job_count} jobs, applying experience level filters")
                 experience_levels_to_use = experience_levels
 
             for exp_level in experience_levels_to_use:
                 print(f"Searching: {phrase} ({exp_level if exp_level else 'All Levels'})")
 
-                retries = 3
-                for attempt in range(retries):
-                    try:
-                        if not safe_get_url(driver, phrase, location=location, exp_level=exp_level, geo_id=geo_id, work_mode=work_mode, start=0):
-                            continue
-                        time.sleep(3)
-                        break
-                    except Exception as e:
-                        print(f"Error loading LinkedIn: {e}")
-                        time.sleep(5)
-                        driver.quit()
-                        driver = configure_driver()
-                        try:
-                            login_once_to_linkedin(driver)
-                        except Exception as e:
-                            print("Error logging in:", e)
-                            time.sleep(3)
-                            login_once_to_linkedin(driver)
-                        time.sleep(5)
-
-                else:
-                    print(f"Failed to load LinkedIn after multiple attempts. Skipping {phrase} with {exp_level}.")
-
+                page_source = safe_get_url(driver=driver, phrase=phrase, location=location, exp_level=exp_level, geo_id=geo_id, work_mode=work_mode, start=0)
+                if not page_source:
                     continue
 
-                page_source = driver.page_source
                 soup = BeautifulSoup(page_source, 'html.parser')
-
-                job_count_final = int(results_text.get_text(strip=True).split()[0].replace(',', '')) if results_text else 0
+                job_count_final = extract_job_count(soup)
                 if job_count_final == 0:
-                    print(f"No jobs found for {phrase} with {exp_level}. Skipping.")
+                    print(f"No jobs found for {phrase} in {location}. Skipping.")
                     continue
 
-                for page in range(0, min(job_count_final, 1000) // 25 * 25, 25):
+                for page in range(0, min(job_count, 1000), 25):  # LinkedIn limits results to 1000
                     page_jobs = []
-                    retry_count = 3
+                    print(f"Scraping page {page // 25 + 1}")
 
-                    for attempt in range(retry_count):
-                        try:
-                            if not safe_get_url(driver, phrase, location=location, exp_level=exp_level, geo_id=geo_id, work_mode=work_mode, start=0):
-                                continue
-                            time.sleep(3)
-                            break
-                        except Exception as e:
-                            print("Error loading LinkedIn attempts, ", e)
-                            time.sleep(5)
-                            driver.quit()
-                            driver = configure_driver()
-                            try:
-                                login_once_to_linkedin(driver)
-                            except Exception as e:
-                                print("Error logging in:", e)
-                                time.sleep(3)
-                                login_once_to_linkedin(driver)
-                    else:
-                        print(f"Skipping page {page} for {phrase} ({exp_level}) after multiple failures.")
+                    page_source = safe_get_url(driver, phrase, location, exp_level=exp_level, geo_id=geo_id,
+                                               work_mode=work_mode, start=page)
+                    if not page_source:
                         continue
 
                     scroll_down(driver)
-
                     page_source = driver.page_source
-                    soup = BeautifulSoup(page_source, 'html.parser')
 
-
-                    # job_cards = soup.find_all("div", class_="")
-                    job_cards = soup.find_all("div", attrs={"data-job-id": True})
-
-                    unknown_count = 0
-                    # job_cards = driver.find_elements(By.XPATH, "/html/body/div[7]/div[3]/div[4]/div/div/main/div/div[2]/div[1]/div/ul/li[1]/div/div")
-                    for job in job_cards:
-                        try:
-                            # Extract Job Title
-                            job_title_tag = job.find("a", attrs={"aria-label": True})
-                            job_title = job_title_tag.find("span", {"aria-hidden": "true"}).get_text(
-                                strip=True) if job_title_tag else "Unknown"
-
-                            # Extract Location
-                            location_ul = job.find("ul", class_=lambda x: x and "metadata-wrapper" in x)
-                            location_span = location_ul.find("span") if location_ul else None
-                            location = location_span.get_text(strip=True) if location_span else "Unknown"
-
-
-                            # Extract Company Name
-                            company_div = job.find("div", class_=lambda x: x and "subtitle" in x)
-                            company_span = company_div.find("span") if company_div else None
-                            company_name = company_span.get_text(strip=True) if company_span else "Unknown"
-
-                            job_id = job.get("data-job-id")
-
-                            if job_id:
-                                if job_title == "Unknown" and company_name == "Unknown":
-                                    unknown_count += 1
-                                else:
-                                    job_data = {
-                                        "job_id": job_id,
-                                        "job_title": job_title,
-                                        "company": company_name,
-                                        "location": location
-                                    }
-                                    page_jobs.append(job_data)
-                                    print(f"Scraped: {job_data}")
-                        except Exception as e:
-                            print("Error scraping job:", e)
-
-                    time.sleep(random.uniform(3, 6))
-
-                    if len(page_jobs) == 0 or unknown_count > 1 or len(job_cards) < 23:
-                        print(f"No jobs found on page {page // 25 + 1}. Moving to next phrase...")
-                        break
-
-                    if page_jobs:
-                        save_job_basic_info(page_jobs, "LinkedIn")
-                        all_jobs.extend(page_jobs)
+                    jobs = scrape_jobs_from_page(page_source)
+                    all_jobs.extend(jobs)
 
     driver.quit()
     return all_jobs
@@ -417,9 +363,8 @@ if __name__ == '__main__':
     password = os.getenv("LINKEDIN_PASSWORD")
     collector = create_collector('my-collector', 'https')
 
-    # "Wrocław", Cracow - already scraped
-    cities = ["Cracow", "Wrocław", "Gdańsk", "Łódź", "Poznan", "Rzeszów", "Szczecin", "Bydgoszcz",
-              "Lublin", "Białsytok", "Warsaw"]
+    # "Cracow" - already scraped
+    cities = ["Szczecin", "Bydgoszcz", "Lublin", "Białsytok", "Łódź", "Poznan", "Rzeszów", "Wrocław", "Gdańsk", "Warsaw"]
 
 
     for city in cities:
