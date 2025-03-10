@@ -68,15 +68,16 @@ def configure_driver():
     return driver
 
 
-def safe_get_url(driver, phrase, location, exp_level=None, geo_id=None, work_mode=None, start=0, retries=3, timeout=180):
+def safe_get_url(driver, phrase, location, exp_level=None, geo_id=None, work_mode=None, start=0, retries=3, timeout=80):
     """Attempts to load a LinkedIn URL with retries in case of timeout or blockage"""
 
     def get_url(searched_phrase, location, exp_level=None, geo_id=None, work_mode=None, start=0):
         if geo_id:
-            template = 'https://www.linkedin.com/jobs/search/?geoId={}&keywords={}&{}&{}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
+            # f_TPR=r2592000 - last month, f_TPR=r604800 - last week
+            template = 'https://www.linkedin.com/jobs/search/?geoId={}&f_TPR=r604800&keywords={}&{}&{}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
             return template.format(geo_id, searched_phrase.replace(' ', '%20'), exp_level or "", work_mode or "", start)
         else:
-            template = 'https://www.linkedin.com/jobs/search/?keywords={}&location={}&{}&{}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
+            template = 'https://www.linkedin.com/jobs/search/?keywords={}&f_TPR=r604800&location={}&{}&{}&origin=JOB_SEARCH_PAGE_JOB_FILTER&start={}'
             return template.format(searched_phrase.replace(' ', '%20'), location.replace(' ', '%20'), exp_level or "",
                                    work_mode or "", start)
 
@@ -97,6 +98,10 @@ def safe_get_url(driver, phrase, location, exp_level=None, geo_id=None, work_mod
             return driver.page_source
         except Exception as e:
             print(f"Error loading {url}: {e}")
+            driver.quit()
+            time.sleep(5)
+            driver = configure_driver()
+            login_once_to_linkedin(driver)
             time.sleep(5)
 
     print(f"Failed to load {url} after {retries} attempts.")
@@ -171,17 +176,20 @@ def scrape_jobs_from_page(page_source):
 
     return scraped_jobs
 
-def scrape_linkedin_jobs(location, searched_phrase):
+def scrape_linkedin_jobs(location):
     driver = configure_driver()
     login_once_to_linkedin(driver)
 
     experience_levels = ["f_E=1", "f_E=2", "f_E=3", "f_E=4", "f_E=5", "f_E=6"]
     work_modes = ["f_WT=1", "f_WT=3"] # without remote "f_WT=2"
+    # "Internship", "Python", "SQL", "C%2B%2B", "C%23", "C", "Java", "JavaScript", "PHP", "Ruby", "Swift",
+    #         "TypeScript", "Kotlin", "Go", "Rust", "Scala", "HTML", "CSS", "React", "Angular", "Vue", "Node.js",
+    #         "Django", "Flask", "Spring", "Laravel", "Express", "Ruby on Rails", "ASP.NET", "jQuery", "Bootstrap",
+    #         "Git", "Docker", "Kubernetes", "AWS", "Azure", "Google Cloud", "Linux", "Windows", "iOS", "Android",
+    # "Data Analyst", "Data Scientist", "Machine Learning Engineer", "Data Engineer", "Excel", "Tableau", "Power BI",
+    # "Microsoft Office", "Documentation Writer", "Tester", "Quality Assurance", "QA", "Software Tester", "Manual Tester",
     phrases = [
-        "Internship", "Python", "SQL", "C%2B%2B", "C%23", "C", "Java", "JavaScript", "PHP", "Ruby", "Swift",
-        "TypeScript", "Kotlin", "Go", "Rust", "Scala", "HTML", "CSS", "React", "Angular", "Vue", "Node.js",
-        "Django", "Flask", "Spring", "Laravel", "Express", "Ruby on Rails", "ASP.NET", "jQuery", "Bootstrap",
-        "Git", "Docker", "Kubernetes", "AWS", "Azure", "Google Cloud", "Linux", "Windows", "iOS", "Android",
+        "Software Developer", "Software Engineer", "Web Developer", "Frontend Developer", "Backend Developer",
     ]
     geo_id = get_geo_id(driver, location)
 
@@ -234,7 +242,7 @@ def scrape_linkedin_jobs(location, searched_phrase):
                     print(f"No jobs found for {phrase} in {location}. Skipping.")
                     continue
 
-                for page in range(0, min(job_count, 1000), 25):  # LinkedIn limits results to 1000
+                for page in range(0, min(job_count_final, 1000), 25):  # LinkedIn limits results to 1000
                     page_jobs = []
                     print(f"Scraping page {page // 25 + 1}")
 
@@ -247,7 +255,9 @@ def scrape_linkedin_jobs(location, searched_phrase):
                     page_source = driver.page_source
 
                     jobs = scrape_jobs_from_page(page_source)
+
                     all_jobs.extend(jobs)
+                    save_job_basic_info(jobs)
 
     driver.quit()
     return all_jobs
@@ -296,6 +306,25 @@ def save_job_basic_info(jobs_data, source="LinkedIn"):
     cur.close()
     conn.close()
     print("Inserted job IDs into the database.")
+
+def get_all_job_urls():
+    """Fetch all job URLs from the database"""
+    conn = psycopg2.connect(
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT")
+    )
+    cur = conn.cursor()
+
+    cur.execute("SELECT job_url FROM job_sources WHERE is_active = TRUE;")
+    job_urls = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return [url[0] for url in job_urls]
 
 
 def scrape_from_url(driver, url):
@@ -367,7 +396,6 @@ if __name__ == '__main__':
     cities = ["Szczecin", "Bydgoszcz", "Lublin", "Białsytok", "Łódź", "Poznan", "Rzeszów", "Wrocław", "Gdańsk", "Warsaw"]
 
 
-    for city in cities:
-        jobs_data = scrape_linkedin_jobs(city, "")
-        save_job_basic_info(jobs_data, "LinkedIn")
-        print(f"Scraped {len(jobs_data)} job postings.")
+    jobs_data = scrape_linkedin_jobs("Poland")
+    save_job_basic_info(jobs_data, "LinkedIn")
+    print(f"Scraped {len(jobs_data)} job postings.")
