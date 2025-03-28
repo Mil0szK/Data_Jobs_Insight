@@ -2,12 +2,17 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from linkedin_scraper import JobSearch, actions, Person
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.keys import Keys
 from dotenv import load_dotenv
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.proxy import Proxy, ProxyType
 from proxyscrape import create_collector, get_collector
+import atexit
 import pandas as pd
 import requests
 import random
@@ -17,6 +22,9 @@ from datetime import datetime
 import psycopg2
 import json
 import os
+
+
+driver = None
 
 def get_proxy():
     """Fetch a new proxy from ProxyScrape"""
@@ -48,24 +56,74 @@ def get_geo_id(driver, location):
         print("geoId not found for url: ", current_url)
         return None
 
+
+def get_free_proxies():
+    url = "https://www.free-proxy-list.net/"
+    response = requests.get(url)
+    proxies = []
+
+    if response.status_code == 200:
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table = soup.find('table', class_="table table-striped table-bordered")
+
+        for row in table.tbody.find_all('tr'):
+            columns = row.find_all('td')
+            ip = columns[0].text.strip()
+            port = columns[1].text.strip()
+            is_https = columns[6].text.strip()
+            if is_https == "yes":
+                proxies.append(f"{ip}:{port}")
+
+    return proxies
+
+def check_proxy(proxy):
+    """Test if a proxy is working by sending a request to a test website."""
+    try:
+        response = requests.get("https://www.linkedin.com", proxies={"https": f"http://{proxy}"}, timeout=5)
+        return response.status_code == 200
+    except:
+        return False
+
+
 def configure_driver():
     """Setup Selenium WebDriver with Proxy & Headers"""
-    chrome_binary = "/usr/bin/google-chrome-stable"
-    chrome_options = Options()
-    chrome_options.binary_location = chrome_binary
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # Reduce bot detection
-    chrome_options.add_argument(f"user-agent=Mozilla/5.0 (X11; Linux x86_64; rv:134.0) Gecko/20100101 Firefox/134.0")
+    try:
+        chrome_binary = "/usr/bin/google-chrome-stable"
+        chrome_options = Options()
+        chrome_options.binary_location = chrome_binary
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_argument("--window-size=1600,1200")
+        chrome_options.add_argument(
+            f"user-agent=Mozilla/5.0 (X11; Linux x86_64; rv:134.0) Gecko/20100101 Firefox/134.0")
 
-    proxy_address = get_proxy()
-    if proxy_address:
-        print(f"Using Proxy: {proxy_address}")
-        chrome_options.add_argument(f'--proxy-server={proxy_address}')
-    else:
-        print("No proxies available. Running without proxy.")
+        # Add this to make ChromeDriver more stable
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
 
-    driver = webdriver.Chrome(options=chrome_options)
-    driver.set_page_load_timeout(180)
-    return driver
+        proxy_address = get_proxy()
+        if proxy_address:
+            print(f"Using Proxy: {proxy_address}")
+            chrome_options.add_argument(f'--proxy-server={proxy_address}')
+        else:
+            print("No proxies available. Running without proxy.")
+
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.set_page_load_timeout(180)
+        return driver
+    except Exception as e:
+        print(f"Error configuring driver: {e}")
+        time.sleep(5)
+        return configure_driver()
+
+def is_driver_active(driver):
+    """Check if the WebDriver session is still active"""
+    try:
+        # A simple command that should work if the driver is active
+        driver.current_url
+        return True
+    except:
+        return False
 
 
 def safe_get_url(driver, phrase, location, exp_level=None, geo_id=None, work_mode=None, start=0, retries=3, timeout=80):
@@ -83,28 +141,46 @@ def safe_get_url(driver, phrase, location, exp_level=None, geo_id=None, work_mod
 
     url = get_url(phrase, location=location, exp_level=exp_level, geo_id=geo_id, work_mode=work_mode, start=start)
 
-    for attempt in range(retries):
+    if driver is None:
+        driver = configure_driver()
+
+    for attempt in range(1, retries + 1):  # 🔥 Retry mechanism
         try:
             driver.set_page_load_timeout(timeout)
+            print("dostaje url")
             driver.get(url)
+            print("po dostaniu url")
             time.sleep(random.uniform(3, 8))  # Random delay to avoid detection
 
             if "login" in driver.current_url or "captcha" in driver.page_source.lower():
-                print("LinkedIn is blocking the bot! Trying to re-login...")
+                print("🔴 LinkedIn is blocking the bot! Trying to re-login...")
                 login_once_to_linkedin(driver)
                 time.sleep(5)
 
-            print(f"Successfully loaded: {url}")
+            print(f"✅ Successfully loaded: {url}")
             return driver.page_source
+
         except Exception as e:
-            print(f"Error loading {url}: {e}")
-            driver.quit()
-            time.sleep(5)
-            driver = configure_driver()
-            login_once_to_linkedin(driver)
+            print(f"⚠️ [Attempt {attempt}] Error loading {url}: {e}")
             time.sleep(5)
 
-    print(f"Failed to load {url} after {retries} attempts.")
+            # If final attempt fails, restart WebDriver
+            if attempt == retries:
+                print("❌ Max retries reached. Restarting WebDriver...")
+
+                try:
+                    if driver:
+                        driver.quit()
+                    time.sleep(5)
+
+                    driver = configure_driver()
+                    login_once_to_linkedin(driver)
+                    time.sleep(5)
+
+                except Exception as restart_error:
+                    print(f"⚠️ Error restarting WebDriver: {restart_error}")
+
+    print(f"❌ Failed to load {url} after {retries} attempts.")
     return None
 
 def login_once_to_linkedin(driver):
@@ -120,12 +196,20 @@ def scroll_down(driver):
         time.sleep(2)
         try:
             job_list_section = driver.find_element(By.XPATH, "/html/body/div[7]/div[3]/div[4]/div/div/main/div/div[2]/div[1]/div")
+            print("Pierwsze job section")
         except:
-            job_list_section = driver.find_element(By.XPATH, "/html/body/div[6]/div[3]/div[4]/div/div/main/div/div[2]/div[1]/div")
-
+            try:
+                job_list_section = driver.find_element(By.XPATH, "/html/body/div[6]/div[3]/div[4]/div/div/main/div/div[2]/div[1]/div")
+                print("Drugie job section")
+            except:
+                job_list_section = driver.find_element(By.XPATH, "/html/body/div[7]/div[3]/div[4]/div/div/main/div/div[2]/div[1]")
+                print("Trzecie job section")
         for _ in range(5):
-            driver.execute_script("arguments[0].scrollTop += 500;", job_list_section)
-            time.sleep(1)
+            try:
+                driver.execute_script("arguments[0].scrollTop += 500;", job_list_section)
+                time.sleep(1)
+            except Exception as e:
+                print("Scrolling error during script:", e)
     except Exception as e:
         print("Scrolling error:", e)
 
@@ -181,20 +265,21 @@ def scrape_linkedin_jobs(location):
     login_once_to_linkedin(driver)
 
     experience_levels = ["f_E=1", "f_E=2", "f_E=3", "f_E=4", "f_E=5", "f_E=6"]
-    work_modes = ["f_WT=1", "f_WT=3"] # without remote "f_WT=2"
-    # "Internship", "Python", "SQL", "C%2B%2B", "C%23", "C", "Java", "JavaScript", "PHP", "Ruby", "Swift",
-    #         "TypeScript", "Kotlin", "Go", "Rust", "Scala", "HTML", "CSS", "React", "Angular", "Vue", "Node.js",
-    #         "Django", "Flask", "Spring", "Laravel", "Express", "Ruby on Rails", "ASP.NET", "jQuery", "Bootstrap",
-    #         "Git", "Docker", "Kubernetes", "AWS", "Azure", "Google Cloud", "Linux", "Windows", "iOS", "Android",
-    # "Data Analyst", "Data Scientist", "Machine Learning Engineer", "Data Engineer", "Excel", "Tableau", "Power BI",
-    # "Microsoft Office", "Documentation Writer", "Tester", "Quality Assurance", "QA", "Software Tester", "Manual Tester",
-    phrases = [
-        "Software Developer", "Software Engineer", "Web Developer", "Frontend Developer", "Backend Developer",
+    work_modes = ["f_WT=2"] # without "f_WT=1", "f_WT=3"
+    # "Software Engineer", "Web Developer", "Frontend Developer", "Backend Developer",
+    #                 "Internship", "Python", "SQL", "C%2B%2B", "C%23", "C", "Java", "JavaScript", "PHP", "Ruby", "Swift",
+    #                 "TypeScript", "Kotlin", "Go", "Rust", "Scala", "HTML",
+    phrases = [  "CSS", "React", "Angular", "Vue", "Node.js",
+                "Django", "Flask", "Spring", "Laravel", "Express", "Ruby on Rails", "ASP.NET", "jQuery", "Bootstrap",
+                "Git", "Docker", "Kubernetes", "AWS", "Azure", "Google Cloud", "Linux", "Windows", "iOS", "Android",
+                "Data Analyst", "Data Scientist", "Machine Learning Engineer", "Data Engineer", "Excel", "Tableau", "Power BI",
+                "Microsoft Office", "Documentation Writer", "Tester", "Quality Assurance", "QA", "Software Tester",
+                "Manual Tester", "Software Developer",
     ]
     geo_id = get_geo_id(driver, location)
 
     all_jobs = []
-    safe_get_url(driver, "", location=location,  geo_id=geo_id, start=0)
+    # page_source = safe_get_url(driver, "", location=location,  geo_id=geo_id, start=0)
     time.sleep(3)
 
     page_source = driver.page_source
@@ -245,15 +330,17 @@ def scrape_linkedin_jobs(location):
                 for page in range(0, min(job_count_final, 1000), 25):  # LinkedIn limits results to 1000
                     page_jobs = []
                     print(f"Scraping page {page // 25 + 1}")
-
-                    page_source = safe_get_url(driver, phrase, location, exp_level=exp_level, geo_id=geo_id,
+                    print("getting safe url")
+                    page_source = safe_get_url(driver=driver, phrase=phrase, location=location, exp_level=exp_level, geo_id=geo_id,
                                                work_mode=work_mode, start=page)
                     if not page_source:
                         continue
 
+                    print("lest's scroll")
                     scroll_down(driver)
+                    time.sleep(1)
                     page_source = driver.page_source
-
+                    print("lest's scrape jobs from page")
                     jobs = scrape_jobs_from_page(page_source)
 
                     all_jobs.extend(jobs)
@@ -307,7 +394,61 @@ def save_job_basic_info(jobs_data, source="LinkedIn"):
     conn.close()
     print("Inserted job IDs into the database.")
 
-def get_all_job_urls():
+def scrape_from_url(driver, url):
+    try:
+        driver.get(url)
+        time.sleep(4)
+
+        try:
+            button_notification = driver.find_element(By.XPATH, "/html/body/div[6]/div/div/section/button")
+            button_notification.click()
+            time.sleep(2)
+        except:
+            print("No notification button found.")
+            pass
+
+        try:
+            try:
+                button = driver.find_element(By.XPATH, "/html/body/main/section[1]/div/div/section[1]/div/div/section/button[1]")
+                button.click()
+
+            except:
+                button2 = driver.find_element(By.XPATH,
+                                              "/html/body/main/section[1]/div/div/section[2]/div/div/section/button[1]")
+                button2.click()
+            time.sleep(3)
+        except:
+            print("No 'Show more' button found.")
+            pass
+
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, 'html.parser')
+        description = soup.select_one("div.show-more-less-html__markup")
+        description_criteria = soup.select_one("ul.description__job-criteria-list")
+
+        if description:
+            text_parts = []
+
+            for element in description.children:
+                if element.name == "strong":
+                    text_parts.append(element.get_text(strip=True) + ":")
+                else:
+                    text_parts.append(element.get_text(strip=True))
+
+            full_text = " ".join(text_parts)
+            if description_criteria:
+                description_criteria_text = " ".join(description_criteria.text.split()).strip()
+                return full_text, description_criteria_text
+            return full_text, None
+        else:
+            print("Job description not found!")
+            return None, None
+    except Exception as e:
+        print("Error scraping job description:", e)
+        return None, None
+
+
+def get_job_urls_without_description():
     """Fetch all job URLs from the database"""
     conn = psycopg2.connect(
         dbname=os.getenv("DB_NAME"),
@@ -318,7 +459,13 @@ def get_all_job_urls():
     )
     cur = conn.cursor()
 
-    cur.execute("SELECT job_url FROM job_sources WHERE is_active = TRUE;")
+    cur.execute("""
+            SELECT js.job_url 
+            FROM job_sources js
+            INNER JOIN job_postings jp ON js.job_id = jp.job_id
+            WHERE jp.description IS NULL AND js.is_active = TRUE;
+        """)  # Only fetch jobs that don't have descriptions
+
     job_urls = cur.fetchall()
 
     cur.close()
@@ -326,8 +473,12 @@ def get_all_job_urls():
 
     return [url[0] for url in job_urls]
 
+def update_job_descriptions(job_url, description):
+    """Update job description in the database."""
+    if description is None:
+        print(f"Skipping update: No description found for {job_url}")
+        return
 
-def scrape_from_url(driver, url):
     conn = psycopg2.connect(
         dbname=os.getenv("DB_NAME"),
         user=os.getenv("DB_USER"),
@@ -337,65 +488,183 @@ def scrape_from_url(driver, url):
     )
     cur = conn.cursor()
 
-    """Scrape job information from a LinkedIn job posting URL."""
-    driver.get(url)
-    time.sleep(3)
-
-
     try:
-        button_notification = driver.find_element(By.XPATH, "/html/body/div[6]/div/div/section/button")
-        button_notification.click()
-        time.sleep(2)
-    except:
-        print("No notification button found.")
-
-    try:
-        button = driver.find_element(By.XPATH, "/html/body/main/section[1]/div/div/section[1]/div/div/section/button[1]")
-        button.click()
-        time.sleep(3)
-    except:
-        print("No 'Show more' button found.")
-
-    page_source = driver.page_source
-    soup = BeautifulSoup(page_source, 'html.parser')
-    description = soup.select_one("div.show-more-less-html__markup")
-    if description:
-        text_parts = []
-
-        for element in description.children:
-            if element.name == "strong":
-                text_parts.append(element.get_text(strip=True) + ":")
-            else:
-                text_parts.append(element.get_text(strip=True))
-
-
-        full_text = " ".join(text_parts)
-        try:
-            cur.execute("""
+        cur.execute("""
                 UPDATE job_postings
                 SET description = %s
                 WHERE job_id = (SELECT job_id FROM job_sources WHERE job_url = %s);
-            """, (full_text, url))
-            conn.commit()
-            print("Successfully updated job description.")
-        except Exception as e:
-            print(f"Database error: {e}")
+            """, (description, job_url))
+        conn.commit()
+        print(f"Successfully updated description for {job_url}")
+    except Exception as e:
+        print(f"Database error for {job_url}: {e}")
+    finally:
+        cur.close()
+        conn.close()
 
-    else:
-        print("Job description not found!")
 
+def update_job_description_criteria(job_url, description_criteria):
+    """Update job description in the database."""
+    if description_criteria is None:
+        print(f"Skipping update: No description found for {job_url}")
+        return
+
+    conn = psycopg2.connect(
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT")
+    )
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+                UPDATE job_postings
+                SET description_criteria = %s
+                WHERE job_id = (SELECT job_id FROM job_sources WHERE job_url = %s);
+            """, (description_criteria, job_url))
+        conn.commit()
+        print(f"Successfully updated description criteria for {job_url}")
+    except Exception as e:
+        print(f"Database error for {job_url}: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+
+def scrape_all_jobs():
+    job_urls = get_job_urls_without_description()[300:]
+    print(f"Scraping {len(job_urls)} job descriptions...")
+    driver = configure_driver()
+    error_count = 0
+
+    for url in job_urls:
+        description, description_criteria = scrape_from_url(driver, url)
+
+        if description is not None:
+            update_job_descriptions(url, description)
+            error_count = 0
+        else:
+            print(f"No description found for {url}")
+            error_count += 1
+
+        if description_criteria is not None:
+            update_job_description_criteria(url, description_criteria)
+
+
+        if error_count > 3:
+            print("Too many errors. Exiting.")
+            driver.quit()
+            time.sleep(10)
+            driver = configure_driver()
+            consecutive_errors = 0
+
+        time.sleep(2)
+    driver.quit()
+    print("Finished scraping job descriptions.")
+
+
+def cleanup_processes():
+    """Ensures ChromeDriver and Chrome are closed on script exit."""
+    global driver
+    if driver:
+        try:
+            driver.quit()
+            print("✅ WebDriver closed successfully.")
+        except:
+            print("⚠️ WebDriver was already closed.")
+
+    # 🔥 Kill any remaining ChromeDriver & Chrome processes
+    os.system("pkill -f chromedriver")
+    os.system("pkill -f chrome")
+    print("🧹 Cleaned up all ChromeDriver and Chrome processes.")
 
 
 if __name__ == '__main__':
+    atexit.register(cleanup_processes)
     load_dotenv()
     email = os.getenv("LINKEDIN_EMAIL")
     password = os.getenv("LINKEDIN_PASSWORD")
     collector = create_collector('my-collector', 'https')
 
+    def te_scrapowania(driver):
+
+        timeout = 80
+        url = "https://www.linkedin.com/jobs/search/?currentJobId=4183948409&f_E=3&f_TPR=r604800&f_WT=2&geoId=105072130&keywords=Software%20Engineer&origin=JOB_SEARCH_PAGE_JOB_FILTER&start=25"
+
+        if driver is None:
+            driver = configure_driver()
+
+        try:
+            driver.set_page_load_timeout(timeout)
+            driver.get(url)
+            time.sleep(5)
+            scroll_down(driver)
+            page_source = driver.page_source
+            jobs = scrape_jobs_from_page(page_source)
+            print(jobs)
+            time.sleep(random.uniform(3, 8))
+
+            if "login" in driver.current_url or "captcha" in driver.page_source.lower():
+                print("LinkedIn is blocking the bot! Trying to re-login...")
+                login_once_to_linkedin(driver)
+                time.sleep(5)
+
+            if driver:
+                driver.quit()
+            time.sleep(5)
+            driver = configure_driver()
+            login_once_to_linkedin(driver)
+            time.sleep(5)
+            driver.set_page_load_timeout(timeout)
+            driver.get(url)
+            time.sleep(5)
+            scroll_down(driver)
+            page_source = driver.page_source
+            jobs = scrape_jobs_from_page(page_source)
+            print(jobs)
+            time.sleep(random.uniform(3, 8))
+
+
+
+            if driver:
+                driver.quit()
+            time.sleep(5)
+            driver = configure_driver()
+            login_once_to_linkedin(driver)
+            time.sleep(5)
+            driver.set_page_load_timeout(timeout)
+            driver.get(url)
+            time.sleep(5)
+            scroll_down(driver)
+            page_source = driver.page_source
+            jobs = scrape_jobs_from_page(page_source)
+            print(jobs)
+
+            time.sleep(random.uniform(3, 8))
+
+            print(f"Successfully loaded: {url}")
+            return driver.page_source
+
+        except Exception as e:
+            print(f"[Attempt Error loading {url}: {e}")
+            time.sleep(5)
+
+        print(f"Failed to load {url} after 3 attempts.")
+        return None
+
+    # driver = configure_driver()
+    # login_once_to_linkedin(driver)
+    # te_scrapowania(driver)
+
     # "Cracow" - already scraped
-    cities = ["Szczecin", "Bydgoszcz", "Lublin", "Białsytok", "Łódź", "Poznan", "Rzeszów", "Wrocław", "Gdańsk", "Warsaw"]
+    # cities = ["Cracow", "Szczecin", "Bydgoszcz", "Lublin", "Białsytok", "Łódź", "Poznan", "Rzeszów", "Wrocław", "Gdańsk", "Warsaw"]
 
 
-    jobs_data = scrape_linkedin_jobs("Poland")
-    save_job_basic_info(jobs_data, "LinkedIn")
-    print(f"Scraped {len(jobs_data)} job postings.")
+    # jobs_data = scrape_linkedin_jobs("Poland")
+    # save_job_basic_info(jobs_data, "LinkedIn")
+    scrape_all_jobs()
+    # driver = configure_driver()
+    # scrape_from_url(driver=driver, url="https://www.linkedin.com/jobs/view/4144364769")
+
