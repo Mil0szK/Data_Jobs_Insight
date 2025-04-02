@@ -144,16 +144,16 @@ def safe_get_url(driver, phrase, location, exp_level=None, geo_id=None, work_mod
     if driver is None:
         driver = configure_driver()
 
-    for attempt in range(1, retries + 1):  # 🔥 Retry mechanism
+    for attempt in range(1, retries + 1):
         try:
             driver.set_page_load_timeout(timeout)
             print("dostaje url")
             driver.get(url)
             print("po dostaniu url")
-            time.sleep(random.uniform(3, 8))  # Random delay to avoid detection
+            time.sleep(random.uniform(3, 8))
 
             if "login" in driver.current_url or "captcha" in driver.page_source.lower():
-                print("🔴 LinkedIn is blocking the bot! Trying to re-login...")
+                print("LinkedIn is blocking the bot! Trying to re-login...")
                 login_once_to_linkedin(driver)
                 time.sleep(5)
 
@@ -161,10 +161,9 @@ def safe_get_url(driver, phrase, location, exp_level=None, geo_id=None, work_mod
             return driver.page_source
 
         except Exception as e:
-            print(f"⚠️ [Attempt {attempt}] Error loading {url}: {e}")
+            print(f"[Attempt {attempt}] Error loading {url}: {e}")
             time.sleep(5)
 
-            # If final attempt fails, restart WebDriver
             if attempt == retries:
                 print("❌ Max retries reached. Restarting WebDriver...")
 
@@ -178,9 +177,9 @@ def safe_get_url(driver, phrase, location, exp_level=None, geo_id=None, work_mod
                     time.sleep(5)
 
                 except Exception as restart_error:
-                    print(f"⚠️ Error restarting WebDriver: {restart_error}")
+                    print(f"Error restarting WebDriver: {restart_error}")
 
-    print(f"❌ Failed to load {url} after {retries} attempts.")
+    print(f"Failed to load {url} after {retries} attempts.")
     return None
 
 def login_once_to_linkedin(driver):
@@ -571,11 +570,10 @@ def cleanup_processes():
     if driver:
         try:
             driver.quit()
-            print("✅ WebDriver closed successfully.")
+            print("WebDriver closed successfully.")
         except:
-            print("⚠️ WebDriver was already closed.")
+            print("WebDriver was already closed.")
 
-    # 🔥 Kill any remaining ChromeDriver & Chrome processes
     os.system("pkill -f chromedriver")
     os.system("pkill -f chrome")
     print("🧹 Cleaned up all ChromeDriver and Chrome processes.")
